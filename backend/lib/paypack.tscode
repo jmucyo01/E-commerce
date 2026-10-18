@@ -1,0 +1,64 @@
+const PAYPACK_BASE_URL = "https://payments.paypack.rw/api";
+
+let cachedToken: { token: string; expiresAt: number } | null = null;
+
+async function getAccessToken(): Promise<string> {
+  if (cachedToken && cachedToken.expiresAt > Date.now()) {
+    return cachedToken.token;
+  }
+
+  const res = await fetch(`${PAYPACK_BASE_URL}/auth/agents/authorize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: process.env.PAYPACK_CLIENT_ID,
+      client_secret: process.env.PAYPACK_CLIENT_SECRET,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error("PAYPACK_AUTH_FAILED");
+  }
+
+  const data = await res.json();
+  // Refresh well before expiry rather than relying on the exact token lifetime.
+  cachedToken = {
+    token: data.access,
+    expiresAt: Date.now() + 10 * 60 * 1000,
+  };
+  return cachedToken.token;
+}
+
+export async function initiateCashIn({
+  amountRwf,
+  phoneNumber,
+  orderId,
+}: {
+  amountRwf: number;
+  phoneNumber: string;
+  orderId: string;
+}) {
+  const token = await getAccessToken();
+
+  const res = await fetch(`${PAYPACK_BASE_URL}/transactions/cashin`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      amount: Math.round(amountRwf),
+      number: phoneNumber,
+      // Draft: the field Paypack echoes back in the webhook still needs checking
+      // against their docs. The webhook uses this to find the order.
+      metadata: orderId,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`PAYPACK_CASHIN_FAILED: ${body}`);
+  }
+
+  return res.json();
+}
